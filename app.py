@@ -10,13 +10,11 @@ from openai import OpenAI
 # -----------------------------
 st.set_page_config(page_title="Gov AI Assistant", layout="wide")
 
-# ✅ Temporary API key fallback (REMOVE before GitHub push)
-#API_KEY = os.getenv("OPENAI_API_KEY") or "sk-xxxxxxxxxxxx"
-API_KEY = "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"
-client = OpenAI(api_key=API_KEY)
+# ✅ Secure API Key from environment
+API_KEY = os.getenv("OPENAI_API_KEY")
 
 if not API_KEY:
-    st.error("⚠️ Please set OPENAI_API_KEY environment variable")
+    st.error("⚠️ OPENAI_API_KEY not found. Please set it in Streamlit Secrets.")
     st.stop()
 
 client = OpenAI(api_key=API_KEY)
@@ -29,23 +27,30 @@ st.write("AI-powered assistant for Governance, Audit, Health & Panchayat use-cas
 # -----------------------------
 
 def ask_llm(prompt, system_prompt="You are a helpful government assistant."):
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ]
-    )
-    return response.choices[0].message.content
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"❌ LLM Error: {str(e)}"
 
 
 @st.cache_data(show_spinner=False)
 def get_pdf_text(uploaded_file):
-    reader = PdfReader(uploaded_file)
-    text = ""
-    for page in reader.pages:
-        text += page.extract_text() or ""
-    return text
+    try:
+        reader = PdfReader(uploaded_file)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() or ""
+        return text
+    except Exception as e:
+        st.error(f"PDF Error: {e}")
+        return ""
 
 
 def chunk_text(text, chunk_size=500):
@@ -54,34 +59,43 @@ def chunk_text(text, chunk_size=500):
 
 @st.cache_resource(show_spinner=False)
 def build_vector_store(text):
-    chunks = chunk_text(text)
-    embeddings = []
+    try:
+        chunks = chunk_text(text)
+        embeddings = []
 
-    for chunk in chunks:
-        response = client.embeddings.create(
-            model="text-embedding-3-small",
-            input=chunk
-        )
-        embeddings.append(response.data[0].embedding)
+        for chunk in chunks:
+            response = client.embeddings.create(
+                model="text-embedding-3-small",
+                input=chunk
+            )
+            embeddings.append(response.data[0].embedding)
 
-    embeddings = np.array(embeddings)
-    dim = len(embeddings[0])
+        embeddings = np.array(embeddings)
+        dim = len(embeddings[0])
 
-    index = faiss.IndexFlatL2(dim)
-    index.add(embeddings)
+        index = faiss.IndexFlatL2(dim)
+        index.add(embeddings)
 
-    return index, chunks
+        return index, chunks
+
+    except Exception as e:
+        st.error(f"Embedding Error: {e}")
+        return None, []
 
 
 def search_index(query, index, chunks):
-    query_embedding = client.embeddings.create(
-        model="text-embedding-3-small",
-        input=query
-    ).data[0].embedding
+    try:
+        query_embedding = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=query
+        ).data[0].embedding
 
-    D, I = index.search(np.array([query_embedding]), k=3)
-    results = [chunks[i] for i in I[0]]
-    return "\n".join(results)
+        D, I = index.search(np.array([query_embedding]), k=3)
+        results = [chunks[i] for i in I[0]]
+        return "\n".join(results)
+
+    except Exception as e:
+        return f"❌ Search Error: {str(e)}"
 
 
 # -----------------------------
@@ -109,15 +123,17 @@ if option == "📄 Document Q&A":
     if uploaded_file:
         text = get_pdf_text(uploaded_file)
 
-        with st.spinner("Processing document..."):
-            index, chunks = build_vector_store(text)
+        if text:
+            with st.spinner("Processing document..."):
+                index, chunks = build_vector_store(text)
 
-        query = st.text_input("Ask your question")
+            if index:
+                query = st.text_input("Ask your question")
 
-        if query:
-            context = search_index(query, index, chunks)
+                if query:
+                    context = search_index(query, index, chunks)
 
-            prompt = f"""
+                    prompt = f"""
 Answer ONLY from the below document.
 
 Context:
@@ -126,8 +142,8 @@ Context:
 Question:
 {query}
 """
-            answer = ask_llm(prompt)
-            st.success(answer)
+                    answer = ask_llm(prompt)
+                    st.success(answer)
 
 
 # -----------------------------
@@ -139,7 +155,8 @@ elif option == "📝 Memo Generator":
     issue = st.text_area("Enter Issue")
 
     if st.button("Generate Memo"):
-        prompt = f"""
+        if issue:
+            prompt = f"""
 Draft an official memo for:
 {issue}
 
@@ -149,8 +166,10 @@ Format:
 - Action Required
 - Signature
 """
-        result = ask_llm(prompt)
-        st.success(result)
+            result = ask_llm(prompt)
+            st.success(result)
+        else:
+            st.warning("Please enter an issue.")
 
 
 # -----------------------------
@@ -176,8 +195,8 @@ elif option == "💰 Audit Compliance Checker":
 
     if uploaded_csv:
         import pandas as pd
-        df = pd.read_csv(uploaded_csv)
 
+        df = pd.read_csv(uploaded_csv)
         st.dataframe(df.head())
 
         if st.button("Check Compliance"):
@@ -193,7 +212,7 @@ Find violations, risks, anomalies.
 
 
 # -----------------------------
-# Module 5: Health Chatbot (CASE STUDY 16)
+# Module 5: Health Chatbot
 # -----------------------------
 elif option == "🏥 Health Citizen Chatbot":
     st.header("🏥 Health Department Chatbot")
